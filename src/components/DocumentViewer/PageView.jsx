@@ -91,6 +91,9 @@ export function PageView({ pageNumber }) {
 
             fabricLayerRef.current.setDimensions(viewport.width, viewport.height);
             fabricLayerRef.current.setTool(state.activeTool, state.toolOptions);
+            if (typeof fabricLayerRef.current.loadAnnotationsFromStore === 'function') {
+              fabricLayerRef.current.loadAnnotationsFromStore();
+            }
           }
         }
       } catch (err) {

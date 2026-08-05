@@ -97,309 +97,147 @@ export class AnnotationExporter {
       cleanPdfBytes = originalPdfBytes;
     }
 
-    if (!Array.isArray(annotations) || annotations.length === 0) {
-      return new Uint8Array(cleanPdfBytes);
+    const pdfDoc = await PDFDocument.load(cleanPdfBytes, { ignoreEncryption: true });
+    const pagesCount = pdfDoc.getPageCount();
+
+    // 1. Clear existing /Annots catalog from all pages in the PDF document
+    for (let i = 0; i < pagesCount; i++) {
+      const page = pdfDoc.getPage(i);
+      page.node.delete(PDFName.of('Annots'));
     }
 
-    const pdfDoc = await PDFDocument.load(cleanPdfBytes, { ignoreEncryption: true });
+    if (!Array.isArray(annotations) || annotations.length === 0) {
+      return await pdfDoc.save({ useObjectStreams: false });
+    }
 
+    // 2. Group active annotations by pageIndex
+    const annotsByPage = new Map();
     for (const annot of annotations) {
-      if (annot.pageIndex >= pdfDoc.getPageCount() || annot.pageIndex < 0) continue;
-      const page = pdfDoc.getPage(annot.pageIndex);
-      const pdfColor = normalizeColorToPdfRgb(annot.color);
-      const safeRect = parseSafeRect(annot.rect);
-      const [x1, y1, x2, y2] = safeRect;
-
-      let annotDict = null;
-
-      if (['highlight', 'underline', 'strikeout'].includes(annot.type)) {
-        const subtypeMap = {
-          highlight: 'Highlight',
-          underline: 'Underline',
-          strikeout: 'StrikeOut',
-        };
-
-        if (annot.quadPoints && Array.isArray(annot.quadPoints) && annot.quadPoints.length >= 8) {
-          for (let i = 0; i < annot.quadPoints.length; i += 8) {
-            const qx1 = annot.quadPoints[i];
-            const qy1 = annot.quadPoints[i + 1];
-            const qx2 = annot.quadPoints[i + 2];
-            const qy2 = annot.quadPoints[i + 3];
-            const qx3 = annot.quadPoints[i + 4];
-            const qy3 = annot.quadPoints[i + 5];
-            const qx4 = annot.quadPoints[i + 6];
-            const qy4 = annot.quadPoints[i + 7];
-
-            const lineMinX = Math.min(qx1, qx2, qx3, qx4);
-            const lineMaxX = Math.max(qx1, qx2, qx3, qx4);
-            const lineMinY = Math.min(qy1, qy2, qy3, qy4);
-            const lineMaxY = Math.max(qy1, qy2, qy3, qy4);
-            const lineH = Math.max(5, Math.abs(lineMaxY - lineMinY));
-
-            if (annot.type === 'highlight') {
-              page.drawRectangle({
-                x: lineMinX,
-                y: lineMinY,
-                width: Math.max(5, Math.abs(lineMaxX - lineMinX)),
-                height: lineH,
-                color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-                opacity: annot.opacity !== undefined ? annot.opacity : 0.30,
-              });
-            } else if (annot.type === 'underline') {
-              const lineY = lineMinY + 1;
-              page.drawLine({
-                start: { x: lineMinX, y: lineY },
-                end: { x: lineMaxX, y: lineY },
-                thickness: 2.0,
-                color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-                opacity: 1.0,
-              });
-            } else if (annot.type === 'strikeout') {
-              const midY = lineMinY + (lineH * 0.45);
-              page.drawLine({
-                start: { x: lineMinX, y: midY },
-                end: { x: lineMaxX, y: midY },
-                thickness: 2.0,
-                color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-                opacity: 1.0,
-              });
-            }
-          }
-        } else {
-          if (annot.type === 'highlight') {
-            page.drawRectangle({
-              x: Math.min(x1, x2),
-              y: Math.min(y1, y2),
-              width: Math.max(10, Math.abs(x2 - x1)),
-              height: Math.max(10, Math.abs(y2 - y1)),
-              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-              opacity: annot.opacity !== undefined ? annot.opacity : 0.30,
-            });
-          } else if (annot.type === 'underline') {
-            const lineY = Math.min(y1, y2) + 2;
-            page.drawLine({
-              start: { x: Math.min(x1, x2), y: lineY },
-              end: { x: Math.max(x1, x2), y: lineY },
-              thickness: 2.5,
-              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-              opacity: 1.0,
-            });
-          } else if (annot.type === 'strikeout') {
-            const midY = Math.min(y1, y2) + (Math.abs(y2 - y1) * 0.45);
-            page.drawLine({
-              start: { x: Math.min(x1, x2), y: midY },
-              end: { x: Math.max(x1, x2), y: midY },
-              thickness: 2.5,
-              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-              opacity: 1.0,
-            });
-          }
+      if (typeof annot.pageIndex === 'number' && annot.pageIndex >= 0 && annot.pageIndex < pagesCount) {
+        if (!annotsByPage.has(annot.pageIndex)) {
+          annotsByPage.set(annot.pageIndex, []);
         }
+        annotsByPage.get(annot.pageIndex).push(annot);
+      }
+    }
 
-        annotDict = pdfDoc.context.obj({
-          Type: 'Annot',
-          Subtype: subtypeMap[annot.type] || 'Highlight',
-          Rect: safeRect,
-          QuadPoints: annot.quadPoints || [
-            x1, y2, x2, y2, x1, y1, x2, y1
-          ],
-          C: pdfColor,
-          CA: annot.opacity !== undefined ? annot.opacity : 0.30,
-          F: 4,
-          T: PDFString.of('AuraPDF'),
-        });
-      } else if (annot.type === 'textbox' || annot.type === 'freetext') {
-        const fontSize = annot.fontSize || 16;
-        const textContent = annot.contents || 'Text';
+    // 3. Attach fresh ISO 32000 /Annots catalog to pages that have active annotations
+    for (const [pageIdx, pageAnnots] of annotsByPage.entries()) {
+      const page = pdfDoc.getPage(pageIdx);
+      const annotsArray = pdfDoc.context.obj([]);
+      const annotsRef = pdfDoc.context.register(annotsArray);
+      page.node.set(PDFName.of('Annots'), annotsRef);
 
-        if (textContent) {
-          const lines = textContent.split('\n');
-          let currentY = Math.max(y1, y2) - fontSize;
-          for (const line of lines) {
-            if (line.trim()) {
-              page.drawText(line, {
-                x: Math.min(x1, x2) + 4,
-                y: Math.max(Math.min(y1, y2), currentY),
-                size: fontSize,
-                color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-                opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
-              });
-            }
-            currentY -= (fontSize * 1.25);
-          }
-        }
-      } else if (annot.type === 'text' || annot.type === 'note') {
-        if (annot.contents) {
-          page.drawText(`[Note: ${annot.contents}]`, {
-            x: x1,
-            y: y1,
-            size: 10,
-            color: rgb(0.8, 0.6, 0.1),
+      for (const annot of pageAnnots) {
+        const pdfColor = normalizeColorToPdfRgb(annot.color);
+        const safeRect = parseSafeRect(annot.rect);
+        const [x1, y1, x2, y2] = safeRect;
+
+        let annotDict = null;
+
+        if (['highlight', 'underline', 'strikeout'].includes(annot.type)) {
+          const subtypeMap = {
+            highlight: 'Highlight',
+            underline: 'Underline',
+            strikeout: 'StrikeOut',
+          };
+
+          annotDict = pdfDoc.context.obj({
+            Type: 'Annot',
+            Subtype: subtypeMap[annot.type] || 'Highlight',
+            Rect: safeRect,
+            QuadPoints: annot.quadPoints || [
+              x1, y2, x2, y2, x1, y1, x2, y1
+            ],
+            C: pdfColor,
+            CA: annot.opacity !== undefined ? annot.opacity : 0.30,
+            F: 4,
+            T: PDFString.of('AuraPDF'),
           });
-        }
-        annotDict = pdfDoc.context.obj({
-          Type: 'Annot',
-          Subtype: 'Text',
-          Rect: safeRect,
-          Contents: PDFString.of(annot.contents || 'Comment'),
-          Name: PDFName.of('Comment'),
-          C: [0.99, 0.88, 0.28],
-          F: 4,
-          T: PDFString.of('AuraPDF'),
-        });
-      } else if (annot.type === 'ink') {
-        const inkList = [];
-        if (annot.pathData && Array.isArray(annot.pathData)) {
-          const flatPoints = [];
-          for (let i = 0; i < annot.pathData.length; i++) {
-            const cmd = annot.pathData[i];
-            if (Array.isArray(cmd) && cmd.length >= 3) {
-              const px = typeof cmd[1] === 'number' && !isNaN(cmd[1]) ? cmd[1] : 100;
-              const py = typeof cmd[2] === 'number' && !isNaN(cmd[2]) ? cmd[2] : 100;
-              flatPoints.push(px, py);
+        } else if (annot.type === 'textbox' || annot.type === 'freetext') {
+          const fontSize = annot.fontSize || 16;
+          const textContent = annot.contents || 'Text';
 
-              if (i > 0) {
-                const prevCmd = annot.pathData[i - 1];
-                if (Array.isArray(prevCmd) && prevCmd.length >= 3) {
-                  const prevX = prevCmd[1];
-                  const prevY = prevCmd[2];
-                  page.drawLine({
-                    start: { x: prevX, y: prevY },
-                    end: { x: px, y: py },
-                    thickness: annot.borderWidth || 3,
-                    color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-                  });
-                }
+          annotDict = pdfDoc.context.obj({
+            Type: 'Annot',
+            Subtype: 'FreeText',
+            Rect: safeRect,
+            Contents: PDFString.of(textContent),
+            DA: PDFString.of(`/Helvetica ${fontSize} Tf ${pdfColor.join(' ')} rg`),
+            C: pdfColor,
+            F: 4,
+            T: PDFString.of('AuraPDF'),
+          });
+        } else if (annot.type === 'text' || annot.type === 'note') {
+          annotDict = pdfDoc.context.obj({
+            Type: 'Annot',
+            Subtype: 'Text',
+            Rect: safeRect,
+            Contents: PDFString.of(annot.contents || 'Comment'),
+            Name: PDFName.of('Comment'),
+            C: [0.99, 0.88, 0.28],
+            F: 4,
+            T: PDFString.of('AuraPDF'),
+          });
+        } else if (annot.type === 'ink') {
+          const inkList = [];
+          if (annot.pathData && Array.isArray(annot.pathData)) {
+            const flatPoints = [];
+            for (let i = 0; i < annot.pathData.length; i++) {
+              const cmd = annot.pathData[i];
+              if (Array.isArray(cmd) && cmd.length >= 3) {
+                const px = typeof cmd[1] === 'number' && !isNaN(cmd[1]) ? cmd[1] : 100;
+                const py = typeof cmd[2] === 'number' && !isNaN(cmd[2]) ? cmd[2] : 100;
+                flatPoints.push(px, py);
               }
             }
-          }
-          if (flatPoints.length >= 4) {
-            inkList.push(flatPoints);
-          }
-        }
-        
-        if (inkList.length === 0) {
-          inkList.push([x1, y1, x2, y2]);
-        }
-
-        annotDict = pdfDoc.context.obj({
-          Type: 'Annot',
-          Subtype: 'Ink',
-          Rect: safeRect,
-          InkList: inkList,
-          C: pdfColor,
-          BS: { W: annot.borderWidth || 3 },
-          F: 4,
-          T: PDFString.of('AuraPDF'),
-        });
-      } else if (['shape', 'square', 'rectangle', 'circle', 'ellipse'].includes(annot.type)) {
-        const isCircle = annot.type === 'circle' || annot.shapeType === 'circle' || annot.type === 'ellipse';
-        if (isCircle) {
-          page.drawEllipse({
-            x: (x1 + x2) / 2,
-            y: (y1 + y2) / 2,
-            xScale: Math.max(5, Math.abs(x2 - x1) / 2),
-            yScale: Math.max(5, Math.abs(y2 - y1) / 2),
-            borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-            borderWidth: annot.borderWidth || 2,
-            opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
-          });
-        } else {
-          page.drawRectangle({
-            x: Math.min(x1, x2),
-            y: Math.min(y1, y2),
-            width: Math.max(10, Math.abs(x2 - x1)),
-            height: Math.max(10, Math.abs(y2 - y1)),
-            borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-            borderWidth: annot.borderWidth || 2,
-            opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
-          });
-        }
-
-        annotDict = pdfDoc.context.obj({
-          Type: 'Annot',
-          Subtype: isCircle ? 'Circle' : 'Square',
-          Rect: safeRect,
-          C: pdfColor,
-          BS: { W: annot.borderWidth || 2 },
-          CA: annot.opacity !== undefined ? annot.opacity : 1.0,
-          F: 4,
-          T: PDFString.of('AuraPDF'),
-        });
-      } else if (annot.type === 'stamp') {
-        if (annot.stampType === 'custom_image' && annot.dataUrl) {
-          try {
-            let embeddedImage;
-            if (annot.dataUrl.startsWith('data:image/png')) {
-              embeddedImage = await pdfDoc.embedPng(annot.dataUrl);
-            } else {
-              embeddedImage = await pdfDoc.embedJpg(annot.dataUrl);
+            if (flatPoints.length >= 4) {
+              inkList.push(flatPoints);
             }
-            const imgW = Math.max(10, Math.abs(x2 - x1)) || 120;
-            const imgH = Math.max(10, Math.abs(y2 - y1)) || 80;
-            page.drawImage(embeddedImage, {
-              x: Math.min(x1, x2),
-              y: Math.min(y1, y2),
-              width: imgW,
-              height: imgH,
-            });
-          } catch (e) {
-            console.warn('Custom image stamp embed warning:', e);
           }
-        } else {
-          const stampText = (annot.stampText || annot.contents || 'APPROVED').toUpperCase();
-          const boxW = Math.max(60, Math.abs(x2 - x1)) || 140;
-          const boxH = Math.max(24, Math.abs(y2 - y1)) || 48;
-          const boxX = Math.min(x1, x2);
-          const boxY = Math.min(y1, y2);
+          if (inkList.length === 0) {
+            inkList.push([x1, y1, x2, y2]);
+          }
 
-          page.drawRectangle({
-            x: boxX,
-            y: boxY,
-            width: boxW,
-            height: boxH,
-            borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-            borderWidth: 2.5,
-            opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
+          annotDict = pdfDoc.context.obj({
+            Type: 'Annot',
+            Subtype: 'Ink',
+            Rect: safeRect,
+            InkList: inkList,
+            C: pdfColor,
+            BS: { W: annot.borderWidth || 3 },
+            F: 4,
+            T: PDFString.of('AuraPDF'),
           });
+        } else if (['shape', 'square', 'rectangle', 'circle', 'ellipse'].includes(annot.type)) {
+          const isCircle = annot.type === 'circle' || annot.shapeType === 'circle' || annot.type === 'ellipse';
 
-          const fontSize = Math.min(16, boxH * 0.45);
-          const textW = stampText.length * (fontSize * 0.55);
-          const textX = boxX + Math.max(4, (boxW - textW) / 2);
-          const textY = boxY + (boxH / 2) - (fontSize / 3);
-
-          page.drawText(stampText, {
-            x: textX,
-            y: textY,
-            size: fontSize,
-            color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-            opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
+          annotDict = pdfDoc.context.obj({
+            Type: 'Annot',
+            Subtype: isCircle ? 'Circle' : 'Square',
+            Rect: safeRect,
+            C: pdfColor,
+            BS: { W: annot.borderWidth || 2 },
+            CA: annot.opacity !== undefined ? annot.opacity : 1.0,
+            F: 4,
+            T: PDFString.of('AuraPDF'),
+          });
+        } else if (annot.type === 'stamp') {
+          annotDict = pdfDoc.context.obj({
+            Type: 'Annot',
+            Subtype: 'Stamp',
+            Rect: safeRect,
+            Contents: PDFString.of(annot.stampText || annot.contents || 'APPROVED'),
+            Name: PDFName.of(annot.stampText || 'Stamp'),
+            C: pdfColor,
+            F: 4,
+            T: PDFString.of('AuraPDF'),
           });
         }
 
-        annotDict = pdfDoc.context.obj({
-          Type: 'Annot',
-          Subtype: 'Stamp',
-          Rect: safeRect,
-          Name: PDFName.of(annot.stampText || 'Stamp'),
-          C: pdfColor,
-          F: 4,
-          T: PDFString.of('AuraPDF'),
-        });
-      }
-
-      if (annotDict) {
-        const annotRef = pdfDoc.context.register(annotDict);
-
-        let annotsObj = page.node.get(PDFName.of('Annots'));
-        if (annotsObj instanceof PDFRef) {
-          annotsObj = pdfDoc.context.lookup(annotsObj);
-        }
-
-        if (annotsObj && typeof annotsObj.push === 'function') {
-          annotsObj.push(annotRef);
-        } else {
-          page.node.set(PDFName.of('Annots'), pdfDoc.context.obj([annotRef]));
+        if (annotDict) {
+          const annotRef = pdfDoc.context.register(annotDict);
+          annotsArray.push(annotRef);
         }
       }
     }
