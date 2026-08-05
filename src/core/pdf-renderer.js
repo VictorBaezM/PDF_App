@@ -74,6 +74,7 @@ export class PDFRenderer {
     const renderContext = {
       canvasContext: ctx,
       viewport: viewport,
+      annotationMode: pdfjsLib.AnnotationMode ? pdfjsLib.AnnotationMode.DISABLE : 0,
     };
 
     const renderTask = page.render(renderContext);

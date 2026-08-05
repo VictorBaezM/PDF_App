@@ -223,6 +223,56 @@ export class AnnotationExporter {
             T: PDFString.of('AuraPDF'),
           });
         } else if (annot.type === 'stamp') {
+          if (annot.stampType === 'custom_image' && annot.dataUrl) {
+            try {
+              let embeddedImage;
+              if (annot.dataUrl.startsWith('data:image/png')) {
+                embeddedImage = await pdfDoc.embedPng(annot.dataUrl);
+              } else {
+                embeddedImage = await pdfDoc.embedJpg(annot.dataUrl);
+              }
+              const imgW = Math.max(10, Math.abs(x2 - x1)) || 120;
+              const imgH = Math.max(10, Math.abs(y2 - y1)) || 80;
+              page.drawImage(embeddedImage, {
+                x: Math.min(x1, x2),
+                y: Math.min(y1, y2),
+                width: imgW,
+                height: imgH,
+              });
+            } catch (e) {
+              console.warn('Custom image stamp embed warning:', e);
+            }
+          } else {
+            const stampText = (annot.stampText || annot.contents || 'APPROVED').toUpperCase();
+            const boxW = Math.max(60, Math.abs(x2 - x1)) || 140;
+            const boxH = Math.max(24, Math.abs(y2 - y1)) || 48;
+            const boxX = Math.min(x1, x2);
+            const boxY = Math.min(y1, y2);
+
+            page.drawRectangle({
+              x: boxX,
+              y: boxY,
+              width: boxW,
+              height: boxH,
+              borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              borderWidth: 2.5,
+              opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
+            });
+
+            const fontSize = Math.min(16, boxH * 0.45);
+            const textW = stampText.length * (fontSize * 0.55);
+            const textX = boxX + Math.max(4, (boxW - textW) / 2);
+            const textY = boxY + (boxH / 2) - (fontSize / 3);
+
+            page.drawText(stampText, {
+              x: textX,
+              y: textY,
+              size: fontSize,
+              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
+            });
+          }
+
           annotDict = pdfDoc.context.obj({
             Type: 'Annot',
             Subtype: 'Stamp',

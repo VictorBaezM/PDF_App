@@ -9,6 +9,7 @@ export function StampModal({ isOpen, onClose, onSelectStamp }) {
 
   const presetStamps = [
     { label: 'APPROVED', color: '#10b981', border: '#059669' },
+    { label: 'PASSED', color: '#10b981', border: '#059669' },
     { label: 'CONFIDENTIAL', color: '#ef4444', border: '#dc2626' },
     { label: 'DRAFT', color: '#f59e0b', border: '#d97706' },
     { label: 'FINAL', color: '#3b82f6', border: '#2563eb' },
