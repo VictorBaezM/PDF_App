@@ -7,27 +7,65 @@ function normalizeColorToPdfRgb(color) {
   if (!color) return [0.0, 0.0, 0.0];
   
   if (Array.isArray(color) && color.length >= 3) {
-    // If values are 0-255, convert to 0-1
     const is255 = color.some((v) => v > 1.0);
     return is255 ? color.slice(0, 3).map((v) => v / 255) : color.slice(0, 3);
   }
 
+  if (typeof color === 'object') {
+    const r = color.r ?? color.R ?? 0;
+    const g = color.g ?? color.G ?? 0;
+    const b = color.b ?? color.B ?? 0;
+    const is255 = r > 1 || g > 1 || b > 1;
+    return is255 ? [r / 255, g / 255, b / 255] : [r, g, b];
+  }
+
   if (typeof color === 'string') {
-    let hex = color.trim().replace('#', '');
+    const str = color.trim().toLowerCase();
+    
+    // Parse rgb(...) or rgba(...) strings
+    const rgbMatch = str.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (rgbMatch) {
+      return [
+        parseInt(rgbMatch[1], 10) / 255,
+        parseInt(rgbMatch[2], 10) / 255,
+        parseInt(rgbMatch[3], 10) / 255,
+      ];
+    }
+
+    // Color name map fallback
+    const namedColors = {
+      blue: [0.231, 0.51, 0.965],
+      red: [0.937, 0.267, 0.267],
+      green: [0.29, 0.87, 0.5],
+      yellow: [0.99, 0.88, 0.28],
+      black: [0.0, 0.0, 0.0],
+      white: [1.0, 1.0, 1.0],
+      purple: [0.545, 0.36, 0.965],
+      pink: [0.957, 0.447, 0.714],
+      orange: [0.96, 0.62, 0.07],
+      cyan: [0.024, 0.714, 0.831],
+    };
+    if (namedColors[str]) {
+      return namedColors[str];
+    }
+
+    let hex = str.replace('#', '');
     if (hex.length === 3) {
       hex = hex.split('').map((c) => c + c).join('');
     }
     if (hex.length === 6) {
       const num = parseInt(hex, 16);
-      return [
-        ((num >> 16) & 255) / 255,
-        ((num >> 8) & 255) / 255,
-        (num & 255) / 255,
-      ];
+      if (!isNaN(num)) {
+        return [
+          ((num >> 16) & 255) / 255,
+          ((num >> 8) & 255) / 255,
+          (num & 255) / 255,
+        ];
+      }
     }
   }
 
-  return [0.0, 0.0, 0.0]; // Default fallback solid black
+  return [0.0, 0.0, 0.0];
 }
 
 function parseSafeRect(rect) {
@@ -81,35 +119,81 @@ export class AnnotationExporter {
           strikeout: 'StrikeOut',
         };
 
-        // Draw visual highlight/underline/strikethrough rectangle or line directly on page stream
-        if (annot.type === 'highlight') {
-          page.drawRectangle({
-            x: Math.min(x1, x2),
-            y: Math.min(y1, y2),
-            width: Math.max(10, Math.abs(x2 - x1)),
-            height: Math.max(10, Math.abs(y2 - y1)),
-            color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-            opacity: annot.opacity !== undefined ? annot.opacity : 0.30, // 30% default opacity for emphasis
-          });
-        } else if (annot.type === 'underline') {
-          const lineY = Math.min(y1, y2) + 2;
-          page.drawLine({
-            start: { x: Math.min(x1, x2), y: lineY },
-            end: { x: Math.max(x1, x2), y: lineY },
-            thickness: 2.5,
-            color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-            opacity: 1.0, // High opacity solid line
-          });
-        } else if (annot.type === 'strikeout') {
-          // Position strikeout line directly through middle of character height (~55% from bottom)
-          const midY = Math.min(y1, y2) + (Math.abs(y2 - y1) * 0.55);
-          page.drawLine({
-            start: { x: Math.min(x1, x2), y: midY },
-            end: { x: Math.max(x1, x2), y: midY },
-            thickness: 2.5,
-            color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
-            opacity: 1.0, // High opacity solid line to block legibility
-          });
+        if (annot.quadPoints && Array.isArray(annot.quadPoints) && annot.quadPoints.length >= 8) {
+          for (let i = 0; i < annot.quadPoints.length; i += 8) {
+            const qx1 = annot.quadPoints[i];
+            const qy1 = annot.quadPoints[i + 1];
+            const qx2 = annot.quadPoints[i + 2];
+            const qy2 = annot.quadPoints[i + 3];
+            const qx3 = annot.quadPoints[i + 4];
+            const qy3 = annot.quadPoints[i + 5];
+            const qx4 = annot.quadPoints[i + 6];
+            const qy4 = annot.quadPoints[i + 7];
+
+            const lineMinX = Math.min(qx1, qx2, qx3, qx4);
+            const lineMaxX = Math.max(qx1, qx2, qx3, qx4);
+            const lineMinY = Math.min(qy1, qy2, qy3, qy4);
+            const lineMaxY = Math.max(qy1, qy2, qy3, qy4);
+            const lineH = Math.max(5, Math.abs(lineMaxY - lineMinY));
+
+            if (annot.type === 'highlight') {
+              page.drawRectangle({
+                x: lineMinX,
+                y: lineMinY,
+                width: Math.max(5, Math.abs(lineMaxX - lineMinX)),
+                height: lineH,
+                color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+                opacity: annot.opacity !== undefined ? annot.opacity : 0.30,
+              });
+            } else if (annot.type === 'underline') {
+              const lineY = lineMinY + 1;
+              page.drawLine({
+                start: { x: lineMinX, y: lineY },
+                end: { x: lineMaxX, y: lineY },
+                thickness: 2.0,
+                color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+                opacity: 1.0,
+              });
+            } else if (annot.type === 'strikeout') {
+              const midY = lineMinY + (lineH * 0.45);
+              page.drawLine({
+                start: { x: lineMinX, y: midY },
+                end: { x: lineMaxX, y: midY },
+                thickness: 2.0,
+                color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+                opacity: 1.0,
+              });
+            }
+          }
+        } else {
+          if (annot.type === 'highlight') {
+            page.drawRectangle({
+              x: Math.min(x1, x2),
+              y: Math.min(y1, y2),
+              width: Math.max(10, Math.abs(x2 - x1)),
+              height: Math.max(10, Math.abs(y2 - y1)),
+              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              opacity: annot.opacity !== undefined ? annot.opacity : 0.30,
+            });
+          } else if (annot.type === 'underline') {
+            const lineY = Math.min(y1, y2) + 2;
+            page.drawLine({
+              start: { x: Math.min(x1, x2), y: lineY },
+              end: { x: Math.max(x1, x2), y: lineY },
+              thickness: 2.5,
+              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              opacity: 1.0,
+            });
+          } else if (annot.type === 'strikeout') {
+            const midY = Math.min(y1, y2) + (Math.abs(y2 - y1) * 0.45);
+            page.drawLine({
+              start: { x: Math.min(x1, x2), y: midY },
+              end: { x: Math.max(x1, x2), y: midY },
+              thickness: 2.5,
+              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              opacity: 1.0,
+            });
+          }
         }
 
         annotDict = pdfDoc.context.obj({
@@ -121,14 +205,13 @@ export class AnnotationExporter {
           ],
           C: pdfColor,
           CA: annot.opacity !== undefined ? annot.opacity : 0.30,
-          F: 4, // Print flag
+          F: 4,
           T: PDFString.of('AuraPDF'),
         });
       } else if (annot.type === 'textbox' || annot.type === 'freetext') {
         const fontSize = annot.fontSize || 16;
         const textContent = annot.contents || 'Text';
 
-        // Draw text directly onto the PDF page stream so it is 100% visible exactly ONCE in all PDF readers
         if (textContent) {
           const lines = textContent.split('\n');
           let currentY = Math.max(y1, y2) - fontSize;
@@ -175,7 +258,6 @@ export class AnnotationExporter {
               const py = typeof cmd[2] === 'number' && !isNaN(cmd[2]) ? cmd[2] : 100;
               flatPoints.push(px, py);
 
-              // Draw vector lines between points directly on PDF page graphics stream
               if (i > 0) {
                 const prevCmd = annot.pathData[i - 1];
                 if (Array.isArray(prevCmd) && prevCmd.length >= 3) {
@@ -210,8 +292,8 @@ export class AnnotationExporter {
           F: 4,
           T: PDFString.of('AuraPDF'),
         });
-      } else if (annot.type === 'shape' || annot.type === 'square' || annot.type === 'circle') {
-        const isCircle = annot.type === 'circle' || annot.shapeType === 'circle';
+      } else if (['shape', 'square', 'rectangle', 'circle', 'ellipse'].includes(annot.type)) {
+        const isCircle = annot.type === 'circle' || annot.shapeType === 'circle' || annot.type === 'ellipse';
         if (isCircle) {
           page.drawEllipse({
             x: (x1 + x2) / 2,
@@ -253,22 +335,45 @@ export class AnnotationExporter {
             } else {
               embeddedImage = await pdfDoc.embedJpg(annot.dataUrl);
             }
+            const imgW = Math.max(10, Math.abs(x2 - x1)) || 120;
+            const imgH = Math.max(10, Math.abs(y2 - y1)) || 80;
             page.drawImage(embeddedImage, {
-              x: x1,
-              y: y1,
-              width: Math.max(10, Math.abs(x2 - x1)) || 100,
-              height: Math.max(10, Math.abs(y2 - y1)) || 100,
+              x: Math.min(x1, x2),
+              y: Math.min(y1, y2),
+              width: imgW,
+              height: imgH,
             });
           } catch (e) {
             console.warn('Custom image stamp embed warning:', e);
           }
         } else {
-          const stampText = annot.stampText || 'APPROVED';
-          page.drawText(`[${stampText}]`, {
-            x: x1,
-            y: y1,
-            size: 16,
+          const stampText = (annot.stampText || annot.contents || 'APPROVED').toUpperCase();
+          const boxW = Math.max(60, Math.abs(x2 - x1)) || 140;
+          const boxH = Math.max(24, Math.abs(y2 - y1)) || 48;
+          const boxX = Math.min(x1, x2);
+          const boxY = Math.min(y1, y2);
+
+          page.drawRectangle({
+            x: boxX,
+            y: boxY,
+            width: boxW,
+            height: boxH,
+            borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+            borderWidth: 2.5,
+            opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
+          });
+
+          const fontSize = Math.min(16, boxH * 0.45);
+          const textW = stampText.length * (fontSize * 0.55);
+          const textX = boxX + Math.max(4, (boxW - textW) / 2);
+          const textY = boxY + (boxH / 2) - (fontSize / 3);
+
+          page.drawText(stampText, {
+            x: textX,
+            y: textY,
+            size: fontSize,
             color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+            opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
           });
         }
 

@@ -55,33 +55,59 @@ export class FabricLayer {
     // Apply live property updates to active selected object if user changes settings in PropertiesPanel
     const activeObject = this.fabricCanvas.getActiveObject();
     if (activeObject) {
-      if (toolOptions.fontSize && activeObject.type === 'i-text') {
-        activeObject.set('fontSize', toolOptions.fontSize);
-      }
-      if (toolOptions.inkColor) {
-        if (activeObject.type === 'i-text') {
-          activeObject.set('fill', toolOptions.inkColor);
-        } else if (activeObject.type === 'rect' || activeObject.type === 'ellipse' || activeObject.type === 'line') {
-          activeObject.set('stroke', toolOptions.inkColor);
+      if (activeObject.isMarkup) {
+        // If selected object is a markup annotation (strikethrough/underline/highlight), update with matching markup color if provided
+        const markupColorOption = toolOptions[`${activeObject.markupType}Color`] || toolOptions.strikeoutColor || toolOptions.underlineColor;
+        if (markupColorOption) {
+          let colorStr = typeof markupColorOption === 'string' ? markupColorOption : '#000000';
+          if (Array.isArray(markupColorOption)) {
+            const r = Math.round((markupColorOption[0] || 0) * 255);
+            const g = Math.round((markupColorOption[1] || 0) * 255);
+            const b = Math.round((markupColorOption[2] || 0) * 255);
+            colorStr = `rgb(${r}, ${g}, ${b})`;
+          }
+          if (activeObject.type === 'group' && activeObject._objects) {
+            activeObject._objects.forEach((child) => {
+              if (child.type === 'line') child.set('stroke', colorStr);
+              else if (child.type === 'rect') child.set('fill', colorStr);
+            });
+          } else {
+            if (activeObject.type === 'line') activeObject.set('stroke', colorStr);
+            else if (activeObject.type === 'rect') activeObject.set('fill', colorStr);
+          }
+          if (activeObject.annotationId) {
+            this.annotationStore.update(activeObject.annotationId, { color: colorStr });
+          }
+        }
+      } else {
+        // Non-markup objects (freehand drawing, shapes, textboxes)
+        if (toolOptions.fontSize && activeObject.type === 'i-text') {
+          activeObject.set('fontSize', toolOptions.fontSize);
+        }
+        if (toolOptions.inkColor) {
+          if (activeObject.type === 'i-text') {
+            activeObject.set('fill', toolOptions.inkColor);
+          } else if (activeObject.type === 'rect' || activeObject.type === 'ellipse' || activeObject.type === 'line') {
+            activeObject.set('stroke', toolOptions.inkColor);
+          }
+        }
+        if (toolOptions.opacity !== undefined) {
+          activeObject.set('opacity', toolOptions.opacity);
+        }
+        if (toolOptions.inkThickness && (activeObject.type === 'rect' || activeObject.type === 'ellipse' || activeObject.type === 'line')) {
+          activeObject.set('strokeWidth', toolOptions.inkThickness);
+        }
+
+        if (activeObject.annotationId) {
+          this.annotationStore.update(activeObject.annotationId, {
+            color: toolOptions.inkColor,
+            fontSize: toolOptions.fontSize,
+            opacity: toolOptions.opacity,
+            borderWidth: toolOptions.inkThickness,
+          });
         }
       }
-      if (toolOptions.opacity !== undefined) {
-        activeObject.set('opacity', toolOptions.opacity);
-      }
-      if (toolOptions.inkThickness && (activeObject.type === 'rect' || activeObject.type === 'ellipse' || activeObject.type === 'line')) {
-        activeObject.set('strokeWidth', toolOptions.inkThickness);
-      }
       this.fabricCanvas.renderAll();
-
-      // Sync property changes back to AnnotationStore
-      if (activeObject.annotationId) {
-        this.annotationStore.update(activeObject.annotationId, {
-          color: toolOptions.inkColor,
-          fontSize: toolOptions.fontSize,
-          opacity: toolOptions.opacity,
-          borderWidth: toolOptions.inkThickness,
-        });
-      }
     }
 
     // Ensure all objects are selectable and evented in select mode
@@ -95,7 +121,6 @@ export class FabricLayer {
 
   renderMarkupAnnotation(annot) {
     if (!annot || !annot.rect) return null;
-    const canvasRect = this.coordTranslator.pdfToCanvasRect(annot.rect);
 
     let colorStr = '#000000';
     if (typeof annot.color === 'string') {
@@ -107,49 +132,117 @@ export class FabricLayer {
       colorStr = `rgb(${r}, ${g}, ${b})`;
     }
 
-    let markupObj;
+    const objects = [];
 
-    if (annot.type === 'highlight') {
-      markupObj = new fabric.Rect({
-        left: canvasRect.x,
-        top: canvasRect.y,
-        width: Math.max(10, canvasRect.width),
-        height: Math.max(10, canvasRect.height),
-        fill: colorStr || '#fde047',
-        opacity: annot.opacity !== undefined ? annot.opacity : 0.30, // 30% default opacity for emphasis without obscuring
-        selectable: true,
-        evented: true,
-        cornerColor: '#06b6d4',
-      });
-    } else if (annot.type === 'underline') {
-      const lineY = canvasRect.y + canvasRect.height - 2;
-      markupObj = new fabric.Line([canvasRect.x, lineY, canvasRect.x + canvasRect.width, lineY], {
-        stroke: colorStr || '#000000',
-        strokeWidth: 3,
-        opacity: 1.0, // High opacity solid black line for high contrast
-        selectable: true,
-        evented: true,
-        cornerColor: '#06b6d4',
-      });
-    } else if (annot.type === 'strikeout') {
-      // Position strikeout line directly through the middle of the characters (x-height ~38% from top)
-      const midY = canvasRect.y + (canvasRect.height * 0.38);
-      markupObj = new fabric.Line([canvasRect.x, midY, canvasRect.x + canvasRect.width, midY], {
-        stroke: colorStr || '#000000',
-        strokeWidth: 3,
-        opacity: 1.0, // High opacity solid black line to clearly cross out character text
-        selectable: true,
-        evented: true,
-        cornerColor: '#06b6d4',
-      });
+    if (annot.quadPoints && Array.isArray(annot.quadPoints) && annot.quadPoints.length >= 8) {
+      for (let i = 0; i < annot.quadPoints.length; i += 8) {
+        const qx1 = annot.quadPoints[i];
+        const qy1 = annot.quadPoints[i + 1];
+        const qx2 = annot.quadPoints[i + 2];
+        const qy2 = annot.quadPoints[i + 3];
+        const qx3 = annot.quadPoints[i + 4];
+        const qy3 = annot.quadPoints[i + 5];
+        const qx4 = annot.quadPoints[i + 6];
+        const qy4 = annot.quadPoints[i + 7];
+
+        const linePdfRect = [
+          Math.min(qx1, qx2, qx3, qx4),
+          Math.min(qy1, qy2, qy3, qy4),
+          Math.max(qx1, qx2, qx3, qx4),
+          Math.max(qy1, qy2, qy3, qy4),
+        ];
+        const lineCanvasRect = this.coordTranslator.pdfToCanvasRect(linePdfRect);
+
+        if (annot.type === 'highlight') {
+          objects.push(new fabric.Rect({
+            left: lineCanvasRect.x,
+            top: lineCanvasRect.y,
+            width: Math.max(5, lineCanvasRect.width),
+            height: Math.max(5, lineCanvasRect.height),
+            fill: colorStr || '#fde047',
+            opacity: annot.opacity !== undefined ? annot.opacity : 0.30,
+            selectable: true,
+            evented: true,
+            cornerColor: '#06b6d4',
+          }));
+        } else if (annot.type === 'underline') {
+          const lineY = lineCanvasRect.y + lineCanvasRect.height - 2;
+          objects.push(new fabric.Line([lineCanvasRect.x, lineY, lineCanvasRect.x + lineCanvasRect.width, lineY], {
+            stroke: colorStr || '#000000',
+            strokeWidth: 2.5,
+            opacity: 1.0,
+            selectable: true,
+            evented: true,
+            cornerColor: '#06b6d4',
+          }));
+        } else if (annot.type === 'strikeout') {
+          const midY = lineCanvasRect.y + (lineCanvasRect.height * 0.45);
+          objects.push(new fabric.Line([lineCanvasRect.x, midY, lineCanvasRect.x + lineCanvasRect.width, midY], {
+            stroke: colorStr || '#000000',
+            strokeWidth: 2.5,
+            opacity: 1.0,
+            selectable: true,
+            evented: true,
+            cornerColor: '#06b6d4',
+          }));
+        }
+      }
+    } else {
+      const canvasRect = this.coordTranslator.pdfToCanvasRect(annot.rect);
+      if (annot.type === 'highlight') {
+        objects.push(new fabric.Rect({
+          left: canvasRect.x,
+          top: canvasRect.y,
+          width: Math.max(10, canvasRect.width),
+          height: Math.max(10, canvasRect.height),
+          fill: colorStr || '#fde047',
+          opacity: annot.opacity !== undefined ? annot.opacity : 0.30,
+          selectable: true,
+          evented: true,
+          cornerColor: '#06b6d4',
+        }));
+      } else if (annot.type === 'underline') {
+        const lineY = canvasRect.y + canvasRect.height - 2;
+        objects.push(new fabric.Line([canvasRect.x, lineY, canvasRect.x + canvasRect.width, lineY], {
+          stroke: colorStr || '#000000',
+          strokeWidth: 2.5,
+          opacity: 1.0,
+          selectable: true,
+          evented: true,
+          cornerColor: '#06b6d4',
+        }));
+      } else if (annot.type === 'strikeout') {
+        const midY = canvasRect.y + (canvasRect.height * 0.45);
+        objects.push(new fabric.Line([canvasRect.x, midY, canvasRect.x + canvasRect.width, midY], {
+          stroke: colorStr || '#000000',
+          strokeWidth: 2.5,
+          opacity: 1.0,
+          selectable: true,
+          evented: true,
+          cornerColor: '#06b6d4',
+        }));
+      }
     }
 
-    if (markupObj) {
-      markupObj.annotationId = annot.id;
-      this.fabricCanvas.add(markupObj);
+    if (objects.length > 0) {
+      let resultObj;
+      if (objects.length === 1) {
+        resultObj = objects[0];
+      } else {
+        resultObj = new fabric.Group(objects, {
+          selectable: true,
+          evented: true,
+          cornerColor: '#06b6d4',
+        });
+      }
+      resultObj.annotationId = annot.id;
+      resultObj.isMarkup = true;
+      resultObj.markupType = annot.type;
+      this.fabricCanvas.add(resultObj);
       this.fabricCanvas.renderAll();
+      return resultObj;
     }
-    return markupObj;
+    return null;
   }
 
   deleteActiveObject() {
@@ -235,12 +328,20 @@ export class FabricLayer {
       if (target && target.annotationId) {
         const bounds = target.getBoundingRect();
         const pdfRect = this.coordTranslator.canvasToPdfRect(bounds);
-        this.annotationStore.update(target.annotationId, {
-          rect: pdfRect,
-          contents: target.text || '',
-          fontSize: target.fontSize,
-          color: target.fill || target.stroke,
-        });
+
+        let newColor = target.stroke;
+        if (target.type === 'i-text') {
+          newColor = target.fill;
+        } else if (target.type === 'group' && target._objects && target._objects.length > 0) {
+          newColor = target._objects[0].stroke || target._objects[0].fill;
+        }
+
+        const updatePayload = { rect: pdfRect };
+        if (target.text !== undefined) updatePayload.contents = target.text;
+        if (target.fontSize !== undefined) updatePayload.fontSize = target.fontSize;
+        if (newColor && newColor !== 'transparent') updatePayload.color = newColor;
+
+        this.annotationStore.update(target.annotationId, updatePayload);
       }
     });
 

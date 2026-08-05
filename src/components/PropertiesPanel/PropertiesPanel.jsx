@@ -73,12 +73,25 @@ export function PropertiesPanel() {
           </label>
           <div style={{ display: 'flex', gap: '8px' }}>
             {highlightColors.map((c) => {
-              const hlColor = state.toolOptions?.highlightColor || [1, 0.92, 0];
-              const isActive = Array.isArray(hlColor) && hlColor[0] === c.rgb[0];
+              const currentMarkupColor = state.activeTool === 'strikeout' 
+                ? (state.toolOptions?.strikeoutColor || '#000000')
+                : state.activeTool === 'underline'
+                ? (state.toolOptions?.underlineColor || '#000000')
+                : (state.toolOptions?.highlightColor || [1, 0.92, 0]);
+
+              const isActive = Array.isArray(currentMarkupColor)
+                ? currentMarkupColor[0] === c.rgb[0]
+                : (typeof currentMarkupColor === 'string' && currentMarkupColor.toLowerCase() === c.hex.toLowerCase());
+
               return (
                 <button
                   key={c.label}
-                  onClick={() => handleOptionChange('highlightColor', c.rgb)}
+                  onClick={() => {
+                    handleOptionChange('highlightColor', c.rgb);
+                    handleOptionChange('underlineColor', c.hex);
+                    handleOptionChange('strikeoutColor', c.hex);
+                    handleOptionChange('inkColor', c.hex);
+                  }}
                   style={{
                     width: '28px',
                     height: '28px',

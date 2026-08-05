@@ -155,23 +155,20 @@ export function PageView({ pageNumber }) {
           let markupColor = '#000000';
           let markupOpacity = 1.0;
 
+          const rawColor = state.toolOptions[state.activeTool + 'Color'] || state.toolOptions.inkColor || state.toolOptions.highlightColor || '#000000';
+          if (Array.isArray(rawColor)) {
+            const r = Math.round((rawColor[0] || 0) * 255);
+            const g = Math.round((rawColor[1] || 0) * 255);
+            const b = Math.round((rawColor[2] || 0) * 255);
+            markupColor = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+          } else if (typeof rawColor === 'string') {
+            markupColor = rawColor;
+          }
+
           if (state.activeTool === 'highlight') {
-            const hlColor = state.toolOptions.highlightColor;
-            if (Array.isArray(hlColor)) {
-              const r = Math.round((hlColor[0] || 0) * 255);
-              const g = Math.round((hlColor[1] || 0) * 255);
-              const b = Math.round((hlColor[2] || 0) * 255);
-              markupColor = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
-            } else {
-              markupColor = hlColor || '#fde047';
-            }
             markupOpacity = state.toolOptions.opacity !== undefined ? state.toolOptions.opacity : 0.30;
-          } else if (state.activeTool === 'underline') {
-            markupColor = state.toolOptions.underlineColor || '#000000';
-            markupOpacity = 1.0; // 100% solid black line
-          } else if (state.activeTool === 'strikeout') {
-            markupColor = state.toolOptions.strikeoutColor || '#000000';
-            markupOpacity = 1.0; // 100% solid black line
+          } else {
+            markupOpacity = 1.0;
           }
 
           const addedAnnot = annotationStore.add({
