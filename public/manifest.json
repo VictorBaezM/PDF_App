@@ -1,0 +1,19 @@
+{
+  "name": "Aura PDF Studio — Privacy-First PDF Editor",
+  "short_name": "Aura PDF",
+  "description": "An out-of-the-box, privacy-first PDF editor. View, annotate, merge, split, rotate, and export — 100% in your browser.",
+  "start_url": "/PDF_App/",
+  "scope": "/PDF_App/",
+  "display": "standalone",
+  "background_color": "#080a12",
+  "theme_color": "#0f3460",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/PDF_App/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
