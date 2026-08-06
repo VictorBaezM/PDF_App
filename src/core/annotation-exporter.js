@@ -1,10 +1,10 @@
-import { PDFDocument, PDFName, PDFString, PDFArray, PDFRef, rgb } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFArray, PDFRef, rgb, StandardFonts } from 'pdf-lib';
 
 /**
  * Convert any color format (hex string '#3b82f6', rgb array [0.2, 0.5, 0.9], or color name) to PDF RGB float array [r, g, b] (0.0 to 1.0)
  */
 function normalizeColorToPdfRgb(color) {
-  if (!color) return [0.0, 0.0, 0.0];
+  if (!color) return [0.0627, 0.7255, 0.5059]; // Default to vibrant green if unspecified
   
   if (Array.isArray(color) && color.length >= 3) {
     const is255 = color.some((v) => v > 1.0);
@@ -36,8 +36,10 @@ function normalizeColorToPdfRgb(color) {
     const namedColors = {
       blue: [0.231, 0.51, 0.965],
       red: [0.937, 0.267, 0.267],
-      green: [0.29, 0.87, 0.5],
-      yellow: [0.99, 0.88, 0.28],
+      green: [0.0627, 0.7255, 0.5059],
+      yellow: [0.96, 0.62, 0.043],
+      amber: [0.96, 0.62, 0.043],
+      gray: [0.419, 0.447, 0.502],
       black: [0.0, 0.0, 0.0],
       white: [1.0, 1.0, 1.0],
       purple: [0.545, 0.36, 0.965],
@@ -65,7 +67,7 @@ function normalizeColorToPdfRgb(color) {
     }
   }
 
-  return [0.0, 0.0, 0.0];
+  return [0.0627, 0.7255, 0.5059];
 }
 
 function parseSafeRect(rect) {
@@ -100,6 +102,14 @@ export class AnnotationExporter {
     const pdfDoc = await PDFDocument.load(cleanPdfBytes, { ignoreEncryption: true });
     const pagesCount = pdfDoc.getPageCount();
 
+    // Embed Standard Bold Helvetica font for stamps and text annotations
+    let helveticaBoldFont = null;
+    try {
+      helveticaBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    } catch (e) {
+      console.warn('Could not embed HelveticaBold font:', e);
+    }
+
     // 1. Clear existing /Annots catalog from all pages in the PDF document
     for (let i = 0; i < pagesCount; i++) {
       const page = pdfDoc.getPage(i);
@@ -121,9 +131,10 @@ export class AnnotationExporter {
       }
     }
 
-    // 3. Attach fresh ISO 32000 /Annots catalog to pages that have active annotations
+    // 3. Attach fresh ISO 32000 /Annots catalog and visual rendering for active annotations
     for (const [pageIdx, pageAnnots] of annotsByPage.entries()) {
       const page = pdfDoc.getPage(pageIdx);
+      const pageHeight = page.getHeight();
       const annotsArray = pdfDoc.context.obj([]);
       const annotsRef = pdfDoc.context.register(annotsArray);
       page.node.set(PDFName.of('Annots'), annotsRef);
@@ -142,6 +153,54 @@ export class AnnotationExporter {
             strikeout: 'StrikeOut',
           };
 
+          if (annot.quadPoints && Array.isArray(annot.quadPoints) && annot.quadPoints.length >= 8) {
+            for (let i = 0; i < annot.quadPoints.length; i += 8) {
+              const qx1 = annot.quadPoints[i];
+              const qy1 = annot.quadPoints[i + 1];
+              const qx2 = annot.quadPoints[i + 2];
+              const qy2 = annot.quadPoints[i + 3];
+              const qx3 = annot.quadPoints[i + 4];
+              const qy3 = annot.quadPoints[i + 5];
+              const qx4 = annot.quadPoints[i + 6];
+              const qy4 = annot.quadPoints[i + 7];
+
+              const lineMinX = Math.min(qx1, qx2, qx3, qx4);
+              const lineMaxX = Math.max(qx1, qx2, qx3, qx4);
+              const lineMinY = Math.min(qy1, qy2, qy3, qy4);
+              const lineMaxY = Math.max(qy1, qy2, qy3, qy4);
+              const lineH = Math.max(5, Math.abs(lineMaxY - lineMinY));
+
+              if (annot.type === 'highlight') {
+                page.drawRectangle({
+                  x: lineMinX,
+                  y: lineMinY,
+                  width: Math.max(5, Math.abs(lineMaxX - lineMinX)),
+                  height: lineH,
+                  color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+                  opacity: annot.opacity !== undefined ? annot.opacity : 0.30,
+                });
+              } else if (annot.type === 'underline') {
+                const lineY = lineMinY + 1;
+                page.drawLine({
+                  start: { x: lineMinX, y: lineY },
+                  end: { x: lineMaxX, y: lineY },
+                  thickness: 2.0,
+                  color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+                  opacity: 1.0,
+                });
+              } else if (annot.type === 'strikeout') {
+                const midY = lineMinY + (lineH * 0.50);
+                page.drawLine({
+                  start: { x: lineMinX, y: midY },
+                  end: { x: lineMaxX, y: midY },
+                  thickness: 2.0,
+                  color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+                  opacity: 1.0,
+                });
+              }
+            }
+          }
+
           annotDict = pdfDoc.context.obj({
             Type: 'Annot',
             Subtype: subtypeMap[annot.type] || 'Highlight',
@@ -157,6 +216,14 @@ export class AnnotationExporter {
         } else if (annot.type === 'textbox' || annot.type === 'freetext') {
           const fontSize = annot.fontSize || 16;
           const textContent = annot.contents || 'Text';
+
+          page.drawText(textContent, {
+            x: x1 + 4,
+            y: y1 + 4,
+            size: fontSize,
+            font: helveticaBoldFont || undefined,
+            color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+          });
 
           annotDict = pdfDoc.context.obj({
             Type: 'Annot',
@@ -187,8 +254,27 @@ export class AnnotationExporter {
               const cmd = annot.pathData[i];
               if (Array.isArray(cmd) && cmd.length >= 3) {
                 const px = typeof cmd[1] === 'number' && !isNaN(cmd[1]) ? cmd[1] : 100;
-                const py = typeof cmd[2] === 'number' && !isNaN(cmd[2]) ? cmd[2] : 100;
-                flatPoints.push(px, py);
+                const pyCanvas = typeof cmd[2] === 'number' && !isNaN(cmd[2]) ? cmd[2] : 100;
+                
+                // Convert Canvas top-left Y coordinate to PDF bottom-left Y coordinate
+                const pyPdf = (pyCanvas <= pageHeight) ? (pageHeight - pyCanvas) : pyCanvas;
+                flatPoints.push(px, pyPdf);
+
+                if (i > 0) {
+                  const prevCmd = annot.pathData[i - 1];
+                  if (Array.isArray(prevCmd) && prevCmd.length >= 3) {
+                    const prevX = prevCmd[1];
+                    const prevYCanvas = prevCmd[2];
+                    const prevYPdf = (prevYCanvas <= pageHeight) ? (pageHeight - prevYCanvas) : prevYCanvas;
+
+                    page.drawLine({
+                      start: { x: prevX, y: prevYPdf },
+                      end: { x: px, y: pyPdf },
+                      thickness: annot.borderWidth || 3,
+                      color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+                    });
+                  }
+                }
               }
             }
             if (flatPoints.length >= 4) {
@@ -211,6 +297,27 @@ export class AnnotationExporter {
           });
         } else if (['shape', 'square', 'rectangle', 'circle', 'ellipse'].includes(annot.type)) {
           const isCircle = annot.type === 'circle' || annot.shapeType === 'circle' || annot.type === 'ellipse';
+          if (isCircle) {
+            page.drawEllipse({
+              x: (x1 + x2) / 2,
+              y: (y1 + y2) / 2,
+              xScale: Math.max(5, Math.abs(x2 - x1) / 2),
+              yScale: Math.max(5, Math.abs(y2 - y1) / 2),
+              borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              borderWidth: annot.borderWidth || 2,
+              opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
+            });
+          } else {
+            page.drawRectangle({
+              x: Math.min(x1, x2),
+              y: Math.min(y1, y2),
+              width: Math.max(10, Math.abs(x2 - x1)),
+              height: Math.max(10, Math.abs(y2 - y1)),
+              borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              borderWidth: annot.borderWidth || 2,
+              opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
+            });
+          }
 
           annotDict = pdfDoc.context.obj({
             Type: 'Annot',
@@ -223,6 +330,18 @@ export class AnnotationExporter {
             T: PDFString.of('AuraPDF'),
           });
         } else if (annot.type === 'stamp') {
+          const stampText = (annot.stampText || annot.contents || 'APPROVED').toUpperCase();
+          const PRESET_STAMP_COLORS = {
+            APPROVED: '#10b981',
+            PASSED: '#10b981',
+            CONFIDENTIAL: '#ef4444',
+            DRAFT: '#f59e0b',
+            FINAL: '#3b82f6',
+            EXPIRED: '#6b7280',
+          };
+          const stampHexColor = annot.color && annot.color !== 'transparent' ? annot.color : (PRESET_STAMP_COLORS[stampText] || '#10b981');
+          const stampPdfColor = normalizeColorToPdfRgb(stampHexColor);
+
           if (annot.stampType === 'custom_image' && annot.dataUrl) {
             try {
               let embeddedImage;
@@ -243,32 +362,41 @@ export class AnnotationExporter {
               console.warn('Custom image stamp embed warning:', e);
             }
           } else {
-            const stampText = (annot.stampText || annot.contents || 'APPROVED').toUpperCase();
             const boxW = Math.max(60, Math.abs(x2 - x1)) || 140;
             const boxH = Math.max(24, Math.abs(y2 - y1)) || 48;
             const boxX = Math.min(x1, x2);
             const boxY = Math.min(y1, y2);
 
+            // Draw dashed rounded rectangle matching preview [6, 4] strokeDashArray
             page.drawRectangle({
               x: boxX,
               y: boxY,
               width: boxW,
               height: boxH,
-              borderColor: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              borderColor: rgb(stampPdfColor[0], stampPdfColor[1], stampPdfColor[2]),
               borderWidth: 2.5,
+              borderDashArray: [6, 4],
               opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
             });
 
-            const fontSize = Math.min(16, boxH * 0.45);
-            const textW = stampText.length * (fontSize * 0.55);
-            const textX = boxX + Math.max(4, (boxW - textW) / 2);
-            const textY = boxY + (boxH / 2) - (fontSize / 3);
+            // Calculate precise text positioning using HelveticaBold font metrics
+            const fontSize = Math.min(18, boxH * 0.45);
+            let textX = boxX + 8;
+            let textY = boxY + (boxH * 0.30);
+
+            if (helveticaBoldFont) {
+              const textWidth = helveticaBoldFont.widthOfTextAtSize(stampText, fontSize);
+              const textHeight = helveticaBoldFont.heightAtSize(fontSize);
+              textX = boxX + Math.max(2, (boxW - textWidth) / 2);
+              textY = boxY + Math.max(2, (boxH - textHeight) / 2) + 2;
+            }
 
             page.drawText(stampText, {
               x: textX,
               y: textY,
               size: fontSize,
-              color: rgb(pdfColor[0], pdfColor[1], pdfColor[2]),
+              font: helveticaBoldFont || undefined,
+              color: rgb(stampPdfColor[0], stampPdfColor[1], stampPdfColor[2]),
               opacity: annot.opacity !== undefined ? annot.opacity : 1.0,
             });
           }
@@ -277,9 +405,9 @@ export class AnnotationExporter {
             Type: 'Annot',
             Subtype: 'Stamp',
             Rect: safeRect,
-            Contents: PDFString.of(annot.stampText || annot.contents || 'APPROVED'),
-            Name: PDFName.of(annot.stampText || 'Stamp'),
-            C: pdfColor,
+            Contents: PDFString.of(stampText),
+            Name: PDFName.of(stampText),
+            C: stampPdfColor,
             F: 4,
             T: PDFString.of('AuraPDF'),
           });

@@ -145,7 +145,15 @@ export class FabricLayer {
           imgElement.src = annot.dataUrl;
         } else {
           const stampText = (annot.stampText || annot.contents || 'APPROVED').toUpperCase();
-          const stampColor = annot.color || '#10b981';
+          const PRESET_STAMP_COLORS = {
+            APPROVED: '#10b981',
+            PASSED: '#10b981',
+            CONFIDENTIAL: '#ef4444',
+            DRAFT: '#f59e0b',
+            FINAL: '#3b82f6',
+            EXPIRED: '#6b7280',
+          };
+          const stampColor = annot.color && annot.color !== 'transparent' ? annot.color : (PRESET_STAMP_COLORS[stampText] || '#10b981');
           const w = Math.max(60, canvasRect.width);
           const h = Math.max(24, canvasRect.height);
 
@@ -702,8 +710,16 @@ export class FabricLayer {
       return;
     }
 
-    const stampText = stampData.text || 'APPROVED';
-    const stampColor = stampData.color || '#10b981';
+    const stampText = (stampData.text || 'APPROVED').toUpperCase();
+    const PRESET_STAMP_COLORS = {
+      APPROVED: '#10b981',
+      PASSED: '#10b981',
+      CONFIDENTIAL: '#ef4444',
+      DRAFT: '#f59e0b',
+      FINAL: '#3b82f6',
+      EXPIRED: '#6b7280',
+    };
+    const stampColor = stampData.color && stampData.color !== 'transparent' ? stampData.color : (PRESET_STAMP_COLORS[stampText] || '#10b981');
 
     const rectObj = new fabric.Rect({
       width: 140,
